@@ -4,7 +4,7 @@ const request = require('request');
 const moment = require('moment');
 require('moment-timezone');
 require('moment/locale/en-gb');
-const config = require('../config.json');
+const config = require('../config');
 const { interlocutor } = require('./state');
 
 const { MAX_FRIENDS, VK_VERSION, LOCALE } = config;
@@ -14,8 +14,9 @@ module.exports = (app, vk, tgUtils, vkUtils) => {
   const {
     errorHandler,
     onlySettedUser,
-    uploadToVK,
     withSelecterReceiver,
+    uploadToVK,
+    uploadDocumentToVk,
   } = tgUtils;
 
   // these functions are in ./utils/vk-utils.js
@@ -135,7 +136,7 @@ module.exports = (app, vk, tgUtils, vkUtils) => {
     }
   });
 
-  app.on('text', onlySettedUser, (ctx) => {
+  app.on('text', onlySettedUser, async (ctx) => {
     const matchResult = ctx.update.message.text.match(/^\/[0-9]+/);
     if (matchResult) {
       const id = matchResult[0].slice(1);
@@ -163,14 +164,34 @@ module.exports = (app, vk, tgUtils, vkUtils) => {
       return ctx.reply(LOCALE.clickOnUserInfoButton);
     }
 
-    const msg = ctx.message.reply_to_message
-      ? `${ctx.message.text}\n\n » ${ctx.message.reply_to_message.text}`
-      : ctx.message.text;
+    let msg = null;
+    let attachment = null;
+
+    if (ctx.message.reply_to_message) {
+      const reply = ctx.message.reply_to_message;
+
+      if (reply.photo) {
+        const photo = reply.photo[reply.photo.length - 1];
+
+        const link = await app.telegram.getFileLink(photo);
+
+        attachment = await vk.upload.messagePhoto({ source: link });
+      }
+
+      if (reply.document) {
+        attachment = await uploadDocumentToVk(reply.document);
+      }
+
+      msg = `${ctx.message.text}\n\n » ${reply.text ? reply.text : ''}`;
+    } else {
+      msg = ctx.message.text;
+    }
 
     vk.api.messages.send({
       user_id: interlocutor.vkId,
       message: msg,
       v: VK_VERSION,
+      attachment,
     }).catch((error) => {
       errorHandler(error, ctx.reply);
     });
@@ -196,6 +217,20 @@ module.exports = (app, vk, tgUtils, vkUtils) => {
 
       return uploadToVK(converterStream, ctx.update.message.caption);
     });
+  });
+
+  app.on('document', onlySettedUser, withSelecterReceiver, async (ctx) => {
+    try {
+      const uploadedDocument = await uploadDocumentToVk(ctx.message.document);
+
+      await vk.api.messages.send({
+        user_id: interlocutor.vkId,
+        attachment: uploadedDocument.toString(),
+        v: VK_VERSION,
+      });
+    } catch (error) {
+      errorHandler(error, ctx.reply);
+    }
   });
 
   app.on('voice', onlySettedUser, withSelecterReceiver, async (ctx) => {
